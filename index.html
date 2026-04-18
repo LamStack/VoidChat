@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="mobile-web-app-capable" content="yes"/>
 <title>VoidChat 🌑</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet"/>
 <style>
@@ -165,7 +168,27 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 
 .user-list::-webkit-scrollbar{width:3px;}
 .user-list::-webkit-scrollbar-thumb{background:var(--border2);}
-@media(max-width:640px){.sidebar{display:none;}}
+@media(max-width:640px){
+  .sidebar{display:none;position:fixed;left:-220px;top:56px;bottom:0;width:220px;z-index:10;transition:left 0.3s;background:var(--surface);border-right:1px solid var(--border);}
+  .sidebar.open{left:0;}
+  .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9;}
+  .sidebar-overlay.open{display:block;}
+  #sidebarToggle{display:block;}
+}
+@media(max-width:768px){
+  .join-box{max-width:90%;padding:1.5rem 1rem;}
+  .topbar{padding:0 0.75rem;}
+  .main{flex-direction:column;}
+  .chat-area{flex:1;}
+  .messages{padding:0.5rem 0.75rem;}
+  .input-bar{padding:0.5rem 0.75rem;}
+  .bubble{font-size:13px;padding:0.5rem 0.75rem;}
+  .toolbar-btn{padding:4px 8px;font-size:11px;}
+  .send-btn{padding:0 0.75rem;}
+  .online-bar{margin-left:auto;}
+  .online-count{font-size:11px;}
+  .mini-avatar{width:24px;height:24px;font-size:12px;}
+}
 </style>
 </head>
 <body>
@@ -192,6 +215,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 <!-- APP -->
 <div id="appShell">
   <div class="topbar">
+    <button id="sidebarToggle" style="display:none;background:none;border:none;color:var(--text);font-size:18px;cursor:pointer;" onclick="toggleSidebar()">☰</button>
     <div class="topbar-logo">Void<span>Chat</span> 🌑</div>
     <div class="topbar-room" id="topbarRoom"># general</div>
     <div class="online-bar">
@@ -282,6 +306,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
     </div>
   </div>
 </div>
+
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="toggleSidebar()"></div>
 
 <div id="lightbox" onclick="closeLightbox()">
   <button id="lightbox-close" onclick="closeLightbox()">✕</button>
@@ -772,6 +798,18 @@ window.showNotif = function(msg) {
 document.getElementById('nameInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') joinChat();
 });
+
+// ── CLEAR HISTORY ON CLOSE ──
+window.addEventListener('beforeunload', () => {
+  remove(ref(db, `messages/${currentRoom}`));
+});
+
+// ── SIDEBAR TOGGLE ──
+window.toggleSidebar = function() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+};
+
 </script>
 </body>
 </html>
