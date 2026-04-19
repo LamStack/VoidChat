@@ -168,8 +168,9 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 
 .user-list::-webkit-scrollbar{width:3px;}
 .user-list::-webkit-scrollbar-thumb{background:var(--border2);}
+#sidebarToggle{display:none;}
 @media(max-width:640px){
-  .sidebar{display:none;position:fixed;left:-220px;top:56px;bottom:0;width:220px;z-index:10;transition:left 0.3s;background:var(--surface);border-right:1px solid var(--border);}
+  .sidebar{display:block;position:fixed;left:-220px;top:56px;bottom:0;width:220px;z-index:10;transition:left 0.3s;background:var(--surface);border-right:1px solid var(--border);}
   .sidebar.open{left:0;}
   .sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9;}
   .sidebar-overlay.open{display:block;}
@@ -215,7 +216,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 <!-- APP -->
 <div id="appShell">
   <div class="topbar">
-    <button id="sidebarToggle" style="display:none;background:none;border:none;color:var(--text);font-size:18px;cursor:pointer;" onclick="toggleSidebar()">☰</button>
+      <button id="sidebarToggle" style="background:none;border:none;color:var(--text);font-size:18px;cursor:pointer;" onclick="toggleSidebar()">☰</button>
     <div class="topbar-logo">Void<span>Chat</span> 🌑</div>
     <div class="topbar-room" id="topbarRoom"># general</div>
     <div class="online-bar">
