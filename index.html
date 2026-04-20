@@ -568,10 +568,30 @@ async function doJoin() {
     shell.style.display = 'flex';
 
     listenPresence();
-    listenMessages(currentRoom);
-    listenTyping(currentRoom);
-    if (privateRoomKey) listenMessages(privateRoomKey);
-    showNotif('Welcome, ' + myName + '! 🌑');
+
+    if (privateRoomKey) {
+      document.getElementById('room-general').style.display = 'none';
+      document.getElementById('room-media').style.display = 'none';
+      document.getElementById('room-random').style.display = 'none';
+      document.querySelector('.sidebar-section').style.display = 'none';
+      currentRoom = privateRoomKey;
+      listenMessages(privateRoomKey);
+      listenTyping(privateRoomKey);
+      const label = '🔒 ' + privateRoomCode.slice(0,16);
+      document.getElementById('chatHeaderName').textContent = label;
+      document.getElementById('topbarRoom').textContent = label;
+      document.getElementById('topbarRoom').className = 'topbar-room private';
+      document.getElementById('chatHeaderSub').textContent = 'Only members with this code can read messages';
+      document.getElementById('privateBadge').style.display = 'inline-flex';
+      document.querySelectorAll('.room-item').forEach(el=>el.classList.remove('active'));
+      const privEl = document.getElementById('room-__private__');
+      if (privEl) privEl.classList.add('active');
+      showNotif('Joined private room 🔒 ' + privateRoomCode);
+    } else {
+      listenMessages(currentRoom);
+      listenTyping(currentRoom);
+      showNotif('Welcome, ' + myName + '! 🌑');
+    }
   } catch(err) {
     document.getElementById('connectingMsg').textContent = 'Connection failed. Check your internet.';
     document.getElementById('joinBtn').disabled = false;
