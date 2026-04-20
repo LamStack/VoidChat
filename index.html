@@ -588,6 +588,10 @@ async function doJoin() {
       if (privEl) privEl.classList.add('active');
       showNotif('Joined private room 🔒 ' + privateRoomCode);
     } else {
+      // Clear all public channel history on every login
+      remove(ref(db, 'messages/general'));
+      remove(ref(db, 'messages/media'));
+      remove(ref(db, 'messages/random'));
       listenMessages(currentRoom);
       listenTyping(currentRoom);
       showNotif('Welcome, ' + myName + '! 🌑');
