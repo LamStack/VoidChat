@@ -26,7 +26,6 @@ body{
   font-family:var(--sans);background:var(--bg);color:var(--text);
   height:100%;display:flex;flex-direction:column;
   overflow:hidden;
-  /* iOS: prevent bounce but allow inner scroll */
   position:fixed;width:100%;top:0;left:0;
 }
 
@@ -53,7 +52,6 @@ body{
   background:var(--surface2);
   -webkit-tap-highlight-color:transparent;
   transition:border-color 0.15s;
-  /* CRITICAL: pointer-events must work */
   pointer-events:auto;
   user-select:none;
   -webkit-user-select:none;
@@ -62,7 +60,7 @@ body{
 .join-input{
   width:100%;background:var(--surface2);border:1.5px solid var(--border2);
   border-radius:var(--radius-sm);padding:0.75rem 1rem;
-  font-family:var(--sans);font-size:16px;/* 16px prevents iOS zoom */
+  font-family:var(--sans);font-size:16px;
   color:var(--text);outline:none;margin-bottom:0.75rem;
   -webkit-appearance:none;
 }
@@ -75,7 +73,9 @@ body{
   -webkit-appearance:none;
 }
 .join-btn:active{opacity:0.85;}
+.join-btn:disabled{opacity:0.6;cursor:not-allowed;}
 .connecting-msg{margin-top:1rem;font-size:13px;color:var(--muted);display:none;}
+.join-error{margin-top:0.75rem;font-size:13px;color:var(--red);display:none;background:var(--red-light);border-radius:var(--radius-xs);padding:0.5rem 0.75rem;}
 
 .join-private-toggle{
   font-size:12px;color:var(--muted2);cursor:pointer;
@@ -100,7 +100,6 @@ body{
 /* ── APP SHELL ── */
 #appShell{
   display:none;flex-direction:column;
-  /* fill full viewport correctly on iOS */
   height:100%;height:fill-available;
   height:-webkit-fill-available;
   overflow:hidden;
@@ -216,7 +215,6 @@ body{
   -webkit-tap-highlight-color:transparent;
 }
 .msg-group:hover .add-reaction-btn{opacity:1;}
-/* Always show on touch devices */
 @media(hover:none){.add-reaction-btn{opacity:1;}}
 
 .sys-msg{text-align:center;font-size:12px;color:var(--muted);padding:4px 0;display:flex;align-items:center;justify-content:center;}
@@ -248,7 +246,7 @@ body{
 #msgInput{
   flex:1;background:var(--surface2);border:1.5px solid var(--border2);
   border-radius:var(--radius);padding:0.65rem 0.9rem;
-  font-family:var(--sans);font-size:16px;/* 16px = no iOS zoom */
+  font-family:var(--sans);font-size:16px;
   color:var(--text);outline:none;resize:none;
   max-height:110px;min-height:44px;line-height:1.45;
   -webkit-appearance:none;
@@ -351,6 +349,7 @@ body{
 
     <button class="join-btn" id="joinBtn">Join Chat →</button>
     <div class="connecting-msg" id="connectingMsg">Connecting…</div>
+    <div class="join-error" id="joinError"></div>
   </div>
 </div>
 
@@ -520,7 +519,7 @@ let audioPlayers={}, isRecording=false, mediaRecorder=null, audioChunks=[], reco
 let pendingAttachment=null;
 let imgCurrentFormat='image/jpeg', imgCurrentQuality=0.80, docTargetFormat=null;
 
-// ── AVATAR SELECTION (vanilla, no onclick in HTML) ──
+// ── AVATAR SELECTION ──
 document.getElementById('avatarRow').addEventListener('click', function(e) {
   const opt = e.target.closest('.avatar-opt');
   if (!opt) return;
@@ -534,10 +533,25 @@ document.getElementById('privateToggle').addEventListener('click', () => {
   document.getElementById('privateField').classList.toggle('open');
 });
 
+// ── SHOW ERROR ──
+function showJoinError(msg) {
+  const el = document.getElementById('joinError');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideJoinError() {
+  document.getElementById('joinError').style.display = 'none';
+}
+
 // ── JOIN ──
 async function doJoin() {
   const name = document.getElementById('nameInput').value.trim();
-  if (!name) { document.getElementById('nameInput').focus(); return; }
+  if (!name) {
+    document.getElementById('nameInput').focus();
+    showJoinError('Please enter a display name.');
+    return;
+  }
+  hideJoinError();
   myName = name;
   myUserId = 'u_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
 
@@ -546,23 +560,27 @@ async function doJoin() {
     privateRoomCode = code;
     privateRoomKey = hashCode(code);
     localMessages[privateRoomKey] = [];
-    document.getElementById('privateSidebarSection').style.display = 'block';
-    document.getElementById('privateRoomLabel').textContent = code.slice(0,16);
-    document.getElementById('room-__private__').addEventListener('click', () => switchRoom(privateRoomKey));
   }
 
-  document.getElementById('connectingMsg').style.display = 'block';
-  document.getElementById('joinBtn').disabled = true;
-  document.getElementById('joinBtn').textContent = 'Connecting…';
+  const connectingEl = document.getElementById('connectingMsg');
+  const joinBtn = document.getElementById('joinBtn');
+  connectingEl.style.display = 'block';
+  connectingEl.textContent = 'Connecting…';
+  joinBtn.disabled = true;
+  joinBtn.textContent = 'Connecting…';
 
   try {
+    // Write presence — this is the real connectivity test
     const userRef = ref(db, `presence/${myUserId}`);
-    await set(userRef, { name: myName, avatar: myAvatar, joinedAt: serverTimestamp() });
+    await set(userRef, {
+      name: myName,
+      avatar: myAvatar,
+      joinedAt: serverTimestamp()
+    });
+    // Schedule cleanup on disconnect
     onDisconnect(userRef).remove();
 
-    typingRef = ref(db, `typing/${currentRoom}/${myUserId}`);
-    onDisconnect(typingRef).remove();
-
+    // ── Success: show app ──
     document.getElementById('joinScreen').style.display = 'none';
     const shell = document.getElementById('appShell');
     shell.style.display = 'flex';
@@ -570,102 +588,136 @@ async function doJoin() {
     listenPresence();
 
     if (privateRoomKey) {
+      // Private room mode — hide public channels
+      document.getElementById('privateSidebarSection').style.display = 'block';
+      document.getElementById('privateRoomLabel').textContent = privateRoomCode.slice(0, 16);
+      document.getElementById('room-__private__').addEventListener('click', () => switchRoom(privateRoomKey));
+
       document.getElementById('room-general').style.display = 'none';
       document.getElementById('room-media').style.display = 'none';
       document.getElementById('room-random').style.display = 'none';
       document.querySelector('.sidebar-section').style.display = 'none';
+
       currentRoom = privateRoomKey;
+      typingRef = ref(db, `typing/${currentRoom}/${myUserId}`);
+      onDisconnect(typingRef).remove();
+
       listenMessages(privateRoomKey);
       listenTyping(privateRoomKey);
-      const label = '🔒 ' + privateRoomCode.slice(0,16);
+
+      const label = '🔒 ' + privateRoomCode.slice(0, 16);
       document.getElementById('chatHeaderName').textContent = label;
       document.getElementById('topbarRoom').textContent = label;
       document.getElementById('topbarRoom').className = 'topbar-room private';
       document.getElementById('chatHeaderSub').textContent = 'Only members with this code can read messages';
       document.getElementById('privateBadge').style.display = 'inline-flex';
-      document.querySelectorAll('.room-item').forEach(el=>el.classList.remove('active'));
+      document.querySelectorAll('.room-item').forEach(el => el.classList.remove('active'));
       const privEl = document.getElementById('room-__private__');
       if (privEl) privEl.classList.add('active');
+
       showNotif('Joined private room 🔒 ' + privateRoomCode);
     } else {
-      // Clear all public channel history on every login
-      remove(ref(db, 'messages/general'));
-      remove(ref(db, 'messages/media'));
-      remove(ref(db, 'messages/random'));
+      // Public room mode
+      // NOTE: removed the remove() calls — they wiped history for everyone and
+      // often caused permission errors that silently broke the join flow.
+      currentRoom = 'general';
+      typingRef = ref(db, `typing/${currentRoom}/${myUserId}`);
+      onDisconnect(typingRef).remove();
+
       listenMessages(currentRoom);
       listenTyping(currentRoom);
       showNotif('Welcome, ' + myName + '! 🌑');
     }
-  } catch(err) {
-    document.getElementById('connectingMsg').textContent = 'Connection failed. Check your internet.';
-    document.getElementById('joinBtn').disabled = false;
-    document.getElementById('joinBtn').textContent = 'Join Chat →';
-    console.error(err);
+
+  } catch (err) {
+    console.error('Join error:', err);
+    connectingEl.style.display = 'none';
+    joinBtn.disabled = false;
+    joinBtn.textContent = 'Join Chat →';
+    showJoinError('Connection failed: ' + (err.message || 'Check your internet and try again.'));
   }
 }
 
 document.getElementById('joinBtn').addEventListener('click', doJoin);
-document.getElementById('nameInput').addEventListener('keydown', e => { if(e.key==='Enter') doJoin(); });
-document.getElementById('privateCodeInput').addEventListener('keydown', e => { if(e.key==='Enter') doJoin(); });
+document.getElementById('nameInput').addEventListener('keydown', e => { if (e.key === 'Enter') doJoin(); });
+document.getElementById('privateCodeInput').addEventListener('keydown', e => { if (e.key === 'Enter') doJoin(); });
+// Clear error on typing
+document.getElementById('nameInput').addEventListener('input', hideJoinError);
 
 function hashCode(str) {
   let h = 0x811c9dc5;
-  for (let i=0; i<str.length; i++) { h ^= str.charCodeAt(i); h = (h*0x01000193)>>>0; }
-  return 'priv_'+h.toString(16).padStart(8,'0');
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
+  return 'priv_' + h.toString(16).padStart(8, '0');
 }
 
 // ── PRESENCE ──
 function listenPresence() {
-  onValue(ref(db,'presence'), snap => {
-    onlineUsers = snap.val()||{};
-    renderUserList(); renderOnlineBar();
+  onValue(ref(db, 'presence'), snap => {
+    onlineUsers = snap.val() || {};
+    renderUserList();
+    renderOnlineBar();
   });
 }
 function renderUserList() {
   const ul = document.getElementById('userList');
   document.getElementById('userCount').textContent = Object.keys(onlineUsers).length;
-  ul.innerHTML = Object.entries(onlineUsers).map(([uid,u]) =>
+  ul.innerHTML = Object.entries(onlineUsers).map(([uid, u]) =>
     `<div class="user-item">
       <div class="user-ava">${u.avatar}<div class="user-dot"></div></div>
-      <div class="user-name${uid===myUserId?' me':''}">${escHtml(u.name)}${uid===myUserId?' (you)':''}</div>
+      <div class="user-name${uid === myUserId ? ' me' : ''}">${escHtml(u.name)}${uid === myUserId ? ' (you)' : ''}</div>
     </div>`).join('');
 }
 function renderOnlineBar() {
   const users = Object.values(onlineUsers);
-  document.getElementById('onlineCount').textContent = users.length+' online';
-  document.getElementById('onlineAvatars').innerHTML = users.slice(0,4).map(u =>
+  document.getElementById('onlineCount').textContent = users.length + ' online';
+  document.getElementById('onlineAvatars').innerHTML = users.slice(0, 4).map(u =>
     `<div class="mini-avatar">${u.avatar}</div>`).join('');
 }
 
 // ── ROOMS ──
 function switchRoom(room) {
-  if (room===currentRoom) { closeSidebar(); return; }
-  if (roomListeners[currentRoom]) { off(ref(db,`messages/${currentRoom}`)); delete roomListeners[currentRoom]; }
-  if (typingListeners[currentRoom]) { off(ref(db,`typing/${currentRoom}`)); delete typingListeners[currentRoom]; }
+  if (room === currentRoom) { closeSidebar(); return; }
+
+  // Detach old listeners
+  if (roomListeners[currentRoom]) {
+    off(ref(db, `messages/${currentRoom}`));
+    delete roomListeners[currentRoom];
+  }
+  if (typingListeners[currentRoom]) {
+    off(ref(db, `typing/${currentRoom}`));
+    delete typingListeners[currentRoom];
+  }
   if (typingRef) remove(typingRef);
+
   currentRoom = room;
-  typingRef = ref(db,`typing/${currentRoom}/${myUserId}`);
+  typingRef = ref(db, `typing/${currentRoom}/${myUserId}`);
   onDisconnect(typingRef).remove();
-  const isPriv = privateRoomKey && room===privateRoomKey;
-  const label = isPriv ? ('🔒 '+(privateRoomCode.slice(0,14)||'private')) : ('# '+room);
-  document.querySelectorAll('.room-item').forEach(el=>el.classList.remove('active'));
-  const re = document.getElementById('room-'+room);
+
+  const isPriv = privateRoomKey && room === privateRoomKey;
+  const label = isPriv ? ('🔒 ' + (privateRoomCode.slice(0, 14) || 'private')) : ('# ' + room);
+
+  document.querySelectorAll('.room-item').forEach(el => el.classList.remove('active'));
+  const re = document.getElementById('room-' + room);
   if (re) re.classList.add('active');
+
   document.getElementById('chatHeaderName').textContent = label;
   document.getElementById('topbarRoom').textContent = label;
-  document.getElementById('topbarRoom').className = 'topbar-room'+(isPriv?' private':'');
-  document.getElementById('chatHeaderSub').textContent = isPriv ? 'Only members with this code can read messages' : 'Multimedia communication channel';
+  document.getElementById('topbarRoom').className = 'topbar-room' + (isPriv ? ' private' : '');
+  document.getElementById('chatHeaderSub').textContent = isPriv
+    ? 'Only members with this code can read messages'
+    : 'Multimedia communication channel';
   document.getElementById('privateBadge').style.display = isPriv ? 'inline-flex' : 'none';
-  const badge = document.getElementById('badge-'+room);
-  if (badge) { badge.style.display='none'; badge.textContent=''; }
+
+  const badge = document.getElementById('badge-' + room);
+  if (badge) { badge.style.display = 'none'; badge.textContent = ''; }
+
   listenMessages(room);
   listenTyping(room);
   closeSidebar();
 }
 
-// Wire room items
-['general','media','random'].forEach(r => {
-  document.getElementById('room-'+r).addEventListener('click', ()=>switchRoom(r));
+['general', 'media', 'random'].forEach(r => {
+  document.getElementById('room-' + r).addEventListener('click', () => switchRoom(r));
 });
 
 function closeSidebar() {
@@ -681,433 +733,450 @@ document.getElementById('sidebarOverlay').addEventListener('click', closeSidebar
 // ── MESSAGES ──
 function listenMessages(room) {
   roomListeners[room] = true;
-  onValue(ref(db,`messages/${room}`), snap => {
-    const data = snap.val()||{};
-    localMessages[room] = Object.entries(data).map(([id,msg])=>({...msg,fbId:id}));
-    localMessages[room].sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
-    if (room===currentRoom) renderMessages();
-    else {
-      const badge = document.getElementById('badge-'+room);
-      if (badge) { badge.textContent='●'; badge.style.display='inline-block'; }
+  onValue(ref(db, `messages/${room}`), snap => {
+    const data = snap.val() || {};
+    localMessages[room] = Object.entries(data).map(([id, msg]) => ({ ...msg, fbId: id }));
+    localMessages[room].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    if (room === currentRoom) {
+      renderMessages();
+    } else {
+      const badge = document.getElementById('badge-' + room);
+      if (badge) { badge.textContent = '●'; badge.style.display = 'inline-block'; }
+    }
+  }, err => {
+    // Firebase read error — show in chat area instead of silent failure
+    console.error('listenMessages error:', err);
+    if (room === currentRoom) {
+      document.getElementById('messages').innerHTML =
+        `<div style="text-align:center;color:var(--red);font-size:13px;padding:2.5rem 1rem;">
+          ⚠️ Could not load messages.<br><span style="color:var(--muted);font-size:12px;">${escHtml(err.message||'Permission denied')}</span>
+        </div>`;
     }
   });
 }
 
 function renderMessages() {
   const container = document.getElementById('messages');
-  const msgs = localMessages[currentRoom]||[];
+  const msgs = localMessages[currentRoom] || [];
   if (!msgs.length) {
-    container.innerHTML='<div style="text-align:center;color:var(--muted);font-size:13px;padding:2.5rem 1rem;">No messages yet. Say hello! 👋</div>';
+    container.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:13px;padding:2.5rem 1rem;">No messages yet. Say hello! 👋</div>';
     return;
   }
-  let html='<div class="day-divider">Today</div>';
-  let lastSender=null;
-  msgs.forEach((msg,i)=>{
-    if (msg.type==='system') {
-      html+=`<div class="sys-msg"><span class="sys-badge">${escHtml(msg.text||'')}</span></div>`;
-      lastSender=null; return;
+  let html = '<div class="day-divider">Today</div>';
+  let lastSender = null;
+  msgs.forEach((msg, i) => {
+    if (msg.type === 'system') {
+      html += `<div class="sys-msg"><span class="sys-badge">${escHtml(msg.text || '')}</span></div>`;
+      lastSender = null; return;
     }
-    const isMe=msg.sender===myName;
-    const showAva=msg.sender!==lastSender; lastSender=msg.sender;
-    const next=msgs[i+1];
-    const isLast=!next||next.sender!==msg.sender||next.type==='system';
-    html+=`<div class="msg-group" id="msg-${msg.fbId}">
-      <div class="msg-row ${isMe?'mine':''}">
-        <div class="msg-ava ${showAva?'':'hidden'}">${msg.avatar||'🧑'}</div>
+    const isMe = msg.sender === myName;
+    const showAva = msg.sender !== lastSender; lastSender = msg.sender;
+    const next = msgs[i + 1];
+    const isLast = !next || next.sender !== msg.sender || next.type === 'system';
+    html += `<div class="msg-group" id="msg-${msg.fbId}">
+      <div class="msg-row ${isMe ? 'mine' : ''}">
+        <div class="msg-ava ${showAva ? '' : 'hidden'}">${msg.avatar || '🧑'}</div>
         <div class="msg-content">
-          ${showAva&&!isMe?`<div class="msg-name">${escHtml(msg.sender)}</div>`:''}
+          ${showAva && !isMe ? `<div class="msg-name">${escHtml(msg.sender)}</div>` : ''}
           ${renderBubble(msg)}
-          ${isLast?`<div style="display:flex;align-items:center;gap:4px;${isMe?'justify-content:flex-end':''}">
+          ${isLast ? `<div style="display:flex;align-items:center;gap:4px;${isMe ? 'justify-content:flex-end' : ''}">
             <div class="reactions">${renderReactions(msg)}</div>
             <button class="add-reaction-btn" data-fbid="${msg.fbId}">＋😊</button>
-          </div>`:''}
-          <div class="bubble-time">${escHtml(msg.time||'')}</div>
+          </div>` : ''}
+          <div class="bubble-time">${escHtml(msg.time || '')}</div>
         </div>
       </div>
     </div>`;
   });
-  container.innerHTML=html;
-  container.scrollTop=container.scrollHeight;
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
 
-  // Wire reaction buttons via delegation (not inline onclick — safer on iOS)
   container.querySelectorAll('.reaction-btn').forEach(btn => {
-    btn.addEventListener('click', ()=>toggleReaction(btn.dataset.fbid, btn.dataset.emoji));
+    btn.addEventListener('click', () => toggleReaction(btn.dataset.fbid, btn.dataset.emoji));
   });
   container.querySelectorAll('.add-reaction-btn').forEach(btn => {
-    btn.addEventListener('click', ()=>showEmojiPick(btn.dataset.fbid));
+    btn.addEventListener('click', () => showEmojiPick(btn.dataset.fbid));
   });
   container.querySelectorAll('.bubble-img').forEach(el => {
-    el.addEventListener('click', ()=>openLightbox(el.querySelector('img').src));
+    el.addEventListener('click', () => openLightbox(el.querySelector('img').src));
   });
   container.querySelectorAll('.bubble-file').forEach(el => {
-    el.addEventListener('click', ()=>downloadFile(el.dataset.fbid));
+    el.addEventListener('click', () => downloadFile(el.dataset.fbid));
   });
   container.querySelectorAll('.audio-play-btn').forEach(btn => {
-    btn.addEventListener('click', ()=>playAudio(btn.dataset.fbid, btn.dataset.src));
+    btn.addEventListener('click', () => playAudio(btn.dataset.fbid, btn.dataset.src));
   });
 }
 
 function renderBubble(msg) {
-  if (msg.type==='image') {
-    return `<div class="bubble-img"><img src="${msg.src}" loading="lazy" alt="image"/>${msg.caption?`<div class="file-caption">${escHtml(msg.caption)}</div>`:''}</div>`;
+  if (msg.type === 'image') {
+    return `<div class="bubble-img"><img src="${msg.src}" loading="lazy" alt="image"/>${msg.caption ? `<div class="file-caption">${escHtml(msg.caption)}</div>` : ''}</div>`;
   }
-  if (msg.type==='file') {
-    const icon=fileIcon(msg.mimeType||'');
+  if (msg.type === 'file') {
+    const icon = fileIcon(msg.mimeType || '');
     return `<div class="bubble-file" data-fbid="${msg.fbId}">
       <div class="file-icon">${icon}</div>
       <div class="file-info">
-        <div class="file-name">${escHtml(msg.fileName||'file')}</div>
-        <div class="file-meta">${escHtml(msg.fileMeta||'')} · <span class="file-dl">⬇ Download</span></div>
+        <div class="file-name">${escHtml(msg.fileName || 'file')}</div>
+        <div class="file-meta">${escHtml(msg.fileMeta || '')} · <span class="file-dl">⬇ Download</span></div>
       </div>
     </div>`;
   }
-  if (msg.type==='audio') {
-    const seed=msg.fbId?msg.fbId.charCodeAt(0):42;
-    const bars=Array.from({length:20},(_,i)=>`<div class="wave-bar" style="height:${10+Math.abs(Math.sin(i*1.1+seed)*13)}px" id="bar-${msg.fbId}-${i}"></div>`).join('');
-    const hasSrc=msg.src&&msg.src.length>10;
+  if (msg.type === 'audio') {
+    const seed = msg.fbId ? msg.fbId.charCodeAt(0) : 42;
+    const bars = Array.from({ length: 20 }, (_, i) =>
+      `<div class="wave-bar" style="height:${10 + Math.abs(Math.sin(i * 1.1 + seed) * 13)}px" id="bar-${msg.fbId}-${i}"></div>`
+    ).join('');
+    const hasSrc = msg.src && msg.src.length > 10;
     return `<div class="bubble-audio">
-      <button class="audio-play-btn" data-fbid="${msg.fbId}" data-src="${hasSrc?msg.src:''}" id="playbtn-${msg.fbId}">▶</button>
+      <button class="audio-play-btn" data-fbid="${msg.fbId}" data-src="${hasSrc ? msg.src : ''}" id="playbtn-${msg.fbId}">▶</button>
       <div class="audio-waveform">${bars}</div>
-      <div class="audio-dur">${escHtml(msg.duration||'0:05')}</div>
+      <div class="audio-dur">${escHtml(msg.duration || '0:05')}</div>
     </div>`;
   }
-  return `<div class="bubble">${escHtml(msg.text||'')}</div>`;
+  return `<div class="bubble">${escHtml(msg.text || '')}</div>`;
 }
 
 function renderReactions(msg) {
   if (!msg.reactions) return '';
-  return Object.entries(msg.reactions).map(([emoji,users])=>{
-    const arr=typeof users==='object'?Object.values(users):[];
-    const reacted=arr.includes(myName);
-    return `<button class="reaction-btn${reacted?' reacted':''}" data-fbid="${msg.fbId}" data-emoji="${emoji}">${emoji} <span>${arr.length}</span></button>`;
+  return Object.entries(msg.reactions).map(([emoji, users]) => {
+    const arr = typeof users === 'object' ? Object.values(users) : [];
+    const reacted = arr.includes(myName);
+    return `<button class="reaction-btn${reacted ? ' reacted' : ''}" data-fbid="${msg.fbId}" data-emoji="${emoji}">${emoji} <span>${arr.length}</span></button>`;
   }).join('');
 }
 
 function fileIcon(mime) {
-  if(mime.includes('pdf')) return '📄';
-  if(mime.includes('word')||mime.includes('document')) return '📝';
-  if(mime.includes('sheet')||mime.includes('excel')||mime.includes('csv')) return '📊';
-  if(mime.includes('presentation')||mime.includes('powerpoint')) return '📊';
-  if(mime.includes('zip')||mime.includes('compressed')) return '🗜️';
-  if(mime.includes('text')) return '📃';
-  if(mime.includes('video')) return '🎬';
-  if(mime.includes('audio')) return '🎵';
+  if (mime.includes('pdf')) return '📄';
+  if (mime.includes('word') || mime.includes('document')) return '📝';
+  if (mime.includes('sheet') || mime.includes('excel') || mime.includes('csv')) return '📊';
+  if (mime.includes('presentation') || mime.includes('powerpoint')) return '📊';
+  if (mime.includes('zip') || mime.includes('compressed')) return '🗜️';
+  if (mime.includes('text')) return '📃';
+  if (mime.includes('video')) return '🎬';
+  if (mime.includes('audio')) return '🎵';
   return '📎';
 }
 
 function downloadFile(fbId) {
-  const msg=Object.values(localMessages).flat().find(m=>m.fbId===fbId);
-  if(!msg||!msg.src) return;
-  const a=document.createElement('a'); a.href=msg.src; a.download=msg.fileName||'file';
+  const msg = Object.values(localMessages).flat().find(m => m.fbId === fbId);
+  if (!msg || !msg.src) return;
+  const a = document.createElement('a'); a.href = msg.src; a.download = msg.fileName || 'file';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 
 // ── SEND ──
 document.getElementById('sendBtn').addEventListener('click', doSend);
-document.getElementById('msgInput').addEventListener('keydown', e=>{
-  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();doSend();}
+document.getElementById('msgInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
 });
-document.getElementById('msgInput').addEventListener('input', ()=>{
-  const inp=document.getElementById('msgInput');
-  inp.style.height='auto';
-  inp.style.height=Math.min(inp.scrollHeight,110)+'px';
-  if(typingRef) set(typingRef,{name:myName,ts:Date.now()});
+document.getElementById('msgInput').addEventListener('input', () => {
+  const inp = document.getElementById('msgInput');
+  inp.style.height = 'auto';
+  inp.style.height = Math.min(inp.scrollHeight, 110) + 'px';
+  if (typingRef) set(typingRef, { name: myName, ts: Date.now() });
   clearTimeout(typingTimeout);
-  typingTimeout=setTimeout(clearTyping,2500);
+  typingTimeout = setTimeout(clearTyping, 2500);
 });
 
 function doSend() {
-  const input=document.getElementById('msgInput');
-  const text=input.value.trim();
+  const input = document.getElementById('msgInput');
+  const text = input.value.trim();
   if (pendingAttachment) {
-    const att=pendingAttachment;
-    const dataUrl=att.processedDataUrl||att.dataUrl;
-    if (att.type==='image') {
-      const fmtLabel=imgCurrentFormat.split('/')[1].toUpperCase();
-      const q=imgCurrentFormat!=='image/png'?' Q'+Math.round(imgCurrentQuality*100):' lossless';
-      const meta=att.processedDataUrl?`[${fmtLabel}·${q}·${formatBytes(Math.round(dataUrl.length*0.75))}]`:'';
-      pushMsg({type:'image',sender:myName,avatar:myAvatar,src:dataUrl,caption:(text?text+' ':'')+meta,time:getTime()});
+    const att = pendingAttachment;
+    const dataUrl = att.processedDataUrl || att.dataUrl;
+    if (att.type === 'image') {
+      const fmtLabel = imgCurrentFormat.split('/')[1].toUpperCase();
+      const q = imgCurrentFormat !== 'image/png' ? ' Q' + Math.round(imgCurrentQuality * 100) : ' lossless';
+      const meta = att.processedDataUrl ? `[${fmtLabel}·${q}·${formatBytes(Math.round(dataUrl.length * 0.75))}]` : '';
+      pushMsg({ type: 'image', sender: myName, avatar: myAvatar, src: dataUrl, caption: (text ? text + ' ' : '') + meta, time: getTime() });
     } else {
-      pushMsg({type:'file',sender:myName,avatar:myAvatar,src:dataUrl,
-        fileName:att.processedName||att.fileName,mimeType:att.processedMime||att.mimeType,
-        fileMeta:formatBytes(Math.round(dataUrl.length*0.75))+' · '+(att.processedName||att.fileName).split('.').pop().toUpperCase(),
-        caption:text,time:getTime()});
+      pushMsg({
+        type: 'file', sender: myName, avatar: myAvatar, src: dataUrl,
+        fileName: att.processedName || att.fileName, mimeType: att.processedMime || att.mimeType,
+        fileMeta: formatBytes(Math.round(dataUrl.length * 0.75)) + ' · ' + (att.processedName || att.fileName).split('.').pop().toUpperCase(),
+        caption: text, time: getTime()
+      });
     }
-    clearAttachment(); input.value=''; return;
+    clearAttachment(); input.value = ''; return;
   }
-  if(!text) return;
-  pushMsg({type:'text',sender:myName,avatar:myAvatar,text,time:getTime()});
-  input.value=''; input.style.height='auto'; clearTyping();
+  if (!text) return;
+  pushMsg({ type: 'text', sender: myName, avatar: myAvatar, text, time: getTime() });
+  input.value = ''; input.style.height = 'auto'; clearTyping();
 }
 
 function pushMsg(msg) {
-  msg.timestamp=Date.now();
-  push(ref(db,`messages/${currentRoom}`),msg);
+  msg.timestamp = Date.now();
+  push(ref(db, `messages/${currentRoom}`), msg);
 }
-function clearTyping() { if(typingRef) remove(typingRef); }
+function clearTyping() { if (typingRef) remove(typingRef); }
 
 // ── TYPING INDICATOR ──
 function listenTyping(room) {
-  typingListeners[room]=true;
-  onValue(ref(db,`typing/${room}`),snap=>{
-    if(room!==currentRoom) return;
-    const others=Object.entries(snap.val()||{}).filter(([uid])=>uid!==myUserId).map(([,v])=>v.name);
-    document.getElementById('typingIndicator').textContent=
-      others.length===1?others[0]+' is typing…':others.length>1?others.length+' typing…':'';
+  typingListeners[room] = true;
+  onValue(ref(db, `typing/${room}`), snap => {
+    if (room !== currentRoom) return;
+    const others = Object.entries(snap.val() || {})
+      .filter(([uid]) => uid !== myUserId)
+      .map(([, v]) => v.name);
+    document.getElementById('typingIndicator').textContent =
+      others.length === 1 ? others[0] + ' is typing…' :
+      others.length > 1 ? others.length + ' typing…' : '';
   });
 }
 
 // ── REACTIONS ──
 function toggleReaction(fbId, emoji) {
-  const msg=Object.values(localMessages).flat().find(m=>m.fbId===fbId);
-  if(!msg) return;
-  const path=ref(db,`messages/${currentRoom}/${fbId}/reactions/${emoji}/${myUserId}`);
-  msg.reactions?.[emoji]?.[myUserId]?remove(path):set(path,myName);
+  const msg = Object.values(localMessages).flat().find(m => m.fbId === fbId);
+  if (!msg) return;
+  const path = ref(db, `messages/${currentRoom}/${fbId}/reactions/${emoji}/${myUserId}`);
+  msg.reactions?.[emoji]?.[myUserId] ? remove(path) : set(path, myName);
 }
 function showEmojiPick(fbId) {
-  const existing=document.getElementById('epick-'+fbId);
-  if(existing){existing.remove();return;}
-  const pick=document.createElement('div');
-  pick.id='epick-'+fbId;
-  pick.style.cssText='display:flex;gap:4px;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:8px;margin-top:4px;flex-wrap:wrap;';
-  ['❤️','👍','😂','😮','🔥','👏','💯','🎉'].forEach(emoji=>{
-    const btn=document.createElement('button');
-    btn.textContent=emoji;
-    btn.style.cssText='background:none;border:none;cursor:pointer;font-size:22px;padding:3px 5px;border-radius:6px;-webkit-tap-highlight-color:transparent;';
-    btn.addEventListener('click',()=>{toggleReaction(fbId,emoji);pick.remove();});
+  const existing = document.getElementById('epick-' + fbId);
+  if (existing) { existing.remove(); return; }
+  const pick = document.createElement('div');
+  pick.id = 'epick-' + fbId;
+  pick.style.cssText = 'display:flex;gap:4px;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:8px;margin-top:4px;flex-wrap:wrap;';
+  ['❤️', '👍', '😂', '😮', '🔥', '👏', '💯', '🎉'].forEach(emoji => {
+    const btn = document.createElement('button');
+    btn.textContent = emoji;
+    btn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:22px;padding:3px 5px;border-radius:6px;-webkit-tap-highlight-color:transparent;';
+    btn.addEventListener('click', () => { toggleReaction(fbId, emoji); pick.remove(); });
     pick.appendChild(btn);
   });
-  document.getElementById('msg-'+fbId)?.appendChild(pick);
+  document.getElementById('msg-' + fbId)?.appendChild(pick);
 }
 
 // ── EMOJI TOOLBAR ──
-document.querySelectorAll('.emoji-btn').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    const inp=document.getElementById('msgInput');
-    inp.value+=btn.dataset.emoji;
+document.querySelectorAll('.emoji-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const inp = document.getElementById('msgInput');
+    inp.value += btn.dataset.emoji;
     inp.focus();
   });
 });
 
 // ── AUDIO ──
-document.getElementById('recordBtn').addEventListener('click', async()=>{
-  const btn=document.getElementById('recordBtn');
-  if(!isRecording){
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      mediaRecorder=new MediaRecorder(stream);
-      audioChunks=[];
-      mediaRecorder.ondataavailable=e=>audioChunks.push(e.data);
-      mediaRecorder.onstop=()=>{
-        const blob=new Blob(audioChunks,{type:'audio/webm'});
-        const reader=new FileReader();
-        reader.onload=ev=>{
-          pushMsg({type:'audio',sender:myName,avatar:myAvatar,src:ev.target.result,
-            duration:formatDur((Date.now()-recordStart)/1000),time:getTime()});
+document.getElementById('recordBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('recordBtn');
+  if (!isRecording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.onload = ev => {
+          pushMsg({ type: 'audio', sender: myName, avatar: myAvatar, src: ev.target.result, duration: formatDur((Date.now() - recordStart) / 1000), time: getTime() });
         };
         reader.readAsDataURL(blob);
-        stream.getTracks().forEach(t=>t.stop());
+        stream.getTracks().forEach(t => t.stop());
       };
-      mediaRecorder.start(); isRecording=true; recordStart=Date.now();
-      btn.classList.add('recording'); btn.textContent='⏹ Stop';
+      mediaRecorder.start(); isRecording = true; recordStart = Date.now();
+      btn.classList.add('recording'); btn.textContent = '⏹ Stop';
     } catch {
-      pushMsg({type:'audio',sender:myName,avatar:myAvatar,src:null,
-        duration:'0:'+(Math.floor(Math.random()*45)+5).toString().padStart(2,'0'),time:getTime()});
+      pushMsg({ type: 'audio', sender: myName, avatar: myAvatar, src: null, duration: '0:' + (Math.floor(Math.random() * 45) + 5).toString().padStart(2, '0'), time: getTime() });
       showNotif('Mic unavailable — simulated audio sent');
     }
   } else {
-    mediaRecorder.stop(); isRecording=false;
-    btn.classList.remove('recording'); btn.textContent='🎙 Record';
+    mediaRecorder.stop(); isRecording = false;
+    btn.classList.remove('recording'); btn.textContent = '🎙 Record';
   }
 });
 
 function playAudio(fbId, src) {
-  if(!src){animateWave(fbId);return;}
-  if(audioPlayers[fbId]){
-    audioPlayers[fbId].pause();delete audioPlayers[fbId];
-    const b=document.getElementById('playbtn-'+fbId);if(b)b.textContent='▶';return;
+  if (!src) { animateWave(fbId); return; }
+  if (audioPlayers[fbId]) {
+    audioPlayers[fbId].pause(); delete audioPlayers[fbId];
+    const b = document.getElementById('playbtn-' + fbId); if (b) b.textContent = '▶';
+    return;
   }
-  const audio=new Audio(src); audioPlayers[fbId]=audio;
+  const audio = new Audio(src); audioPlayers[fbId] = audio;
   audio.play();
-  document.getElementById('playbtn-'+fbId).textContent='⏸';
+  document.getElementById('playbtn-' + fbId).textContent = '⏸';
   animateWave(fbId);
-  audio.onended=()=>{delete audioPlayers[fbId];const b=document.getElementById('playbtn-'+fbId);if(b)b.textContent='▶';};
+  audio.onended = () => { delete audioPlayers[fbId]; const b = document.getElementById('playbtn-' + fbId); if (b) b.textContent = '▶'; };
 }
-function animateWave(fbId){
-  let i=0; const bars=document.querySelectorAll(`[id^="bar-${fbId}-"]`);
-  const iv=setInterval(()=>{if(i>=bars.length){clearInterval(iv);return;}bars[i++].classList.add('played');},110);
+function animateWave(fbId) {
+  let i = 0; const bars = document.querySelectorAll(`[id^="bar-${fbId}-"]`);
+  const iv = setInterval(() => { if (i >= bars.length) { clearInterval(iv); return; } bars[i++].classList.add('played'); }, 110);
 }
 
 // ── IMAGE FILE ──
-document.getElementById('imgUploadBtn').addEventListener('click',()=>document.getElementById('fileInput').click());
-document.getElementById('fileInput').addEventListener('change',e=>{
-  const file=e.target.files[0]; if(!file) return;
-  imgCurrentFormat='image/jpeg'; imgCurrentQuality=0.80; docTargetFormat=null;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    pendingAttachment={type:'image',dataUrl:ev.target.result,fileName:file.name,mimeType:file.type,origSize:file.size,processedDataUrl:null};
-    showAttachPreview('🖼️',file.name,formatBytes(file.size));
-    document.getElementById('qualitySlider').value=80;
-    document.getElementById('qualityVal').textContent='80%';
-    document.getElementById('qualitySlider').disabled=false;
-    document.getElementById('imgCompressSection').style.display='block';
-    document.getElementById('docCompressSection').style.display='none';
-    document.getElementById('imgConvertSection').style.display='block';
-    document.getElementById('docConvertSection').style.display='none';
-    document.getElementById('compressToolBtn').style.display='flex';
-    document.querySelectorAll('#imgFmtBtns .fmt-btn').forEach((b,i)=>b.classList.toggle('active',i===0));
+document.getElementById('imgUploadBtn').addEventListener('click', () => document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', e => {
+  const file = e.target.files[0]; if (!file) return;
+  imgCurrentFormat = 'image/jpeg'; imgCurrentQuality = 0.80; docTargetFormat = null;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    pendingAttachment = { type: 'image', dataUrl: ev.target.result, fileName: file.name, mimeType: file.type, origSize: file.size, processedDataUrl: null };
+    showAttachPreview('🖼️', file.name, formatBytes(file.size));
+    document.getElementById('qualitySlider').value = 80;
+    document.getElementById('qualityVal').textContent = '80%';
+    document.getElementById('qualitySlider').disabled = false;
+    document.getElementById('imgCompressSection').style.display = 'block';
+    document.getElementById('docCompressSection').style.display = 'none';
+    document.getElementById('imgConvertSection').style.display = 'block';
+    document.getElementById('docConvertSection').style.display = 'none';
+    document.getElementById('compressToolBtn').style.display = 'flex';
+    document.querySelectorAll('#imgFmtBtns .fmt-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
   };
-  reader.readAsDataURL(file); e.target.value='';
+  reader.readAsDataURL(file); e.target.value = '';
 });
 
 // ── DOC FILE ──
-document.getElementById('docUploadBtn').addEventListener('click',()=>document.getElementById('docInput').click());
-document.getElementById('docInput').addEventListener('change',e=>{
-  const file=e.target.files[0]; if(!file) return;
-  docTargetFormat=null;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    pendingAttachment={type:'doc',dataUrl:ev.target.result,fileName:file.name,mimeType:file.type,origSize:file.size,processedDataUrl:null};
-    showAttachPreview(fileIcon(file.type),file.name,formatBytes(file.size));
-    document.getElementById('imgCompressSection').style.display='none';
-    document.getElementById('docCompressSection').style.display='block';
-    document.getElementById('imgConvertSection').style.display='none';
-    document.getElementById('docConvertSection').style.display='block';
-    buildDocFormatBtns(file.name,file.type);
+document.getElementById('docUploadBtn').addEventListener('click', () => document.getElementById('docInput').click());
+document.getElementById('docInput').addEventListener('change', e => {
+  const file = e.target.files[0]; if (!file) return;
+  docTargetFormat = null;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    pendingAttachment = { type: 'doc', dataUrl: ev.target.result, fileName: file.name, mimeType: file.type, origSize: file.size, processedDataUrl: null };
+    showAttachPreview(fileIcon(file.type), file.name, formatBytes(file.size));
+    document.getElementById('imgCompressSection').style.display = 'none';
+    document.getElementById('docCompressSection').style.display = 'block';
+    document.getElementById('imgConvertSection').style.display = 'none';
+    document.getElementById('docConvertSection').style.display = 'block';
+    buildDocFormatBtns(file.name, file.type);
     updateDocSizeEst();
-    document.getElementById('compressToolBtn').style.display='flex';
+    document.getElementById('compressToolBtn').style.display = 'flex';
   };
-  reader.readAsDataURL(file); e.target.value='';
+  reader.readAsDataURL(file); e.target.value = '';
 });
 
 function buildDocFormatBtns(fileName, mimeType) {
-  const ext=fileName.split('.').pop().toLowerCase();
-  const map={
-    'pdf':[{fmt:'txt',label:'TXT',note:'Extract text from PDF'},{fmt:'html',label:'HTML',note:'Convert to HTML'}],
-    'docx':[{fmt:'txt',label:'TXT',note:'Strip formatting, keep text'},{fmt:'html',label:'HTML',note:'Convert to HTML'},{fmt:'md',label:'MD',note:'Convert to Markdown'}],
-    'txt':[{fmt:'html',label:'HTML',note:'Wrap in HTML page'},{fmt:'md',label:'MD',note:'Treat as Markdown'}],
-    'csv':[{fmt:'json',label:'JSON',note:'Convert to JSON array'},{fmt:'html',label:'HTML',note:'Render as HTML table'}],
-    'md':[{fmt:'html',label:'HTML',note:'Render Markdown to HTML'},{fmt:'txt',label:'TXT',note:'Strip Markdown'}],
+  const ext = fileName.split('.').pop().toLowerCase();
+  const map = {
+    'pdf': [{ fmt: 'txt', label: 'TXT', note: 'Extract text from PDF' }, { fmt: 'html', label: 'HTML', note: 'Convert to HTML' }],
+    'docx': [{ fmt: 'txt', label: 'TXT', note: 'Strip formatting, keep text' }, { fmt: 'html', label: 'HTML', note: 'Convert to HTML' }, { fmt: 'md', label: 'MD', note: 'Convert to Markdown' }],
+    'txt': [{ fmt: 'html', label: 'HTML', note: 'Wrap in HTML page' }, { fmt: 'md', label: 'MD', note: 'Treat as Markdown' }],
+    'csv': [{ fmt: 'json', label: 'JSON', note: 'Convert to JSON array' }, { fmt: 'html', label: 'HTML', note: 'Render as HTML table' }],
+    'md': [{ fmt: 'html', label: 'HTML', note: 'Render Markdown to HTML' }, { fmt: 'txt', label: 'TXT', note: 'Strip Markdown' }],
   };
-  const opts=map[ext]||[{fmt:'txt',label:'TXT',note:'Convert to plain text'}];
-  const grid=document.getElementById('docFmtBtns');
-  grid.innerHTML=opts.map((o,i)=>`<button class="docfmt-btn${i===0?' active':''}" data-fmt="${o.fmt}" data-note="${o.note}">${o.label}</button>`).join('');
-  docTargetFormat=opts[0].fmt;
-  document.getElementById('convertNote').textContent=opts[0].note;
-  grid.querySelectorAll('.docfmt-btn').forEach(btn=>{
-    btn.addEventListener('click',()=>{
-      grid.querySelectorAll('.docfmt-btn').forEach(b=>b.classList.remove('active'));
+  const opts = map[ext] || [{ fmt: 'txt', label: 'TXT', note: 'Convert to plain text' }];
+  const grid = document.getElementById('docFmtBtns');
+  grid.innerHTML = opts.map((o, i) =>
+    `<button class="docfmt-btn${i === 0 ? ' active' : ''}" data-fmt="${o.fmt}" data-note="${o.note}">${o.label}</button>`
+  ).join('');
+  docTargetFormat = opts[0].fmt;
+  document.getElementById('convertNote').textContent = opts[0].note;
+  grid.querySelectorAll('.docfmt-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      grid.querySelectorAll('.docfmt-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      docTargetFormat=btn.dataset.fmt;
-      document.getElementById('convertNote').textContent=btn.dataset.note;
+      docTargetFormat = btn.dataset.fmt;
+      document.getElementById('convertNote').textContent = btn.dataset.note;
     });
   });
 }
 function updateDocSizeEst() {
-  if(!pendingAttachment||pendingAttachment.type!=='doc') return;
-  const orig=pendingAttachment.origSize;
-  const est=Math.round(orig*0.82);
-  const pct=Math.round(Math.abs(est-orig)/orig*100);
-  document.getElementById('docSizeOrig').textContent=formatBytes(orig);
-  document.getElementById('docSizeEst').textContent=formatBytes(est);
-  document.getElementById('docSizeTag').textContent='-'+pct+'% est.';
+  if (!pendingAttachment || pendingAttachment.type !== 'doc') return;
+  const orig = pendingAttachment.origSize;
+  const est = Math.round(orig * 0.82);
+  const pct = Math.round(Math.abs(est - orig) / orig * 100);
+  document.getElementById('docSizeOrig').textContent = formatBytes(orig);
+  document.getElementById('docSizeEst').textContent = formatBytes(est);
+  document.getElementById('docSizeTag').textContent = '-' + pct + '% est.';
 }
 
 // ── FILE TOOLS PANEL ──
-document.getElementById('compressToolBtn').addEventListener('click',()=>{
+document.getElementById('compressToolBtn').addEventListener('click', () => {
   document.getElementById('fileToolsPanel').classList.toggle('open');
-  if(document.getElementById('fileToolsPanel').classList.contains('open')&&pendingAttachment?.type==='image') updateImgSizePreview();
+  if (document.getElementById('fileToolsPanel').classList.contains('open') && pendingAttachment?.type === 'image') updateImgSizePreview();
 });
-document.getElementById('ftab-btn-compress').addEventListener('click',function(){
-  document.querySelectorAll('.ftool-tab').forEach(b=>b.classList.remove('active'));
-  document.querySelectorAll('.ftool-body').forEach(b=>b.classList.remove('open'));
+document.getElementById('ftab-btn-compress').addEventListener('click', function () {
+  document.querySelectorAll('.ftool-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.ftool-body').forEach(b => b.classList.remove('open'));
   this.classList.add('active');
   document.getElementById('ftab-compress').classList.add('open');
-  if(pendingAttachment?.type==='image') updateImgSizePreview();
+  if (pendingAttachment?.type === 'image') updateImgSizePreview();
 });
-document.getElementById('ftab-btn-convert').addEventListener('click',function(){
-  document.querySelectorAll('.ftool-tab').forEach(b=>b.classList.remove('active'));
-  document.querySelectorAll('.ftool-body').forEach(b=>b.classList.remove('open'));
+document.getElementById('ftab-btn-convert').addEventListener('click', function () {
+  document.querySelectorAll('.ftool-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.ftool-body').forEach(b => b.classList.remove('open'));
   this.classList.add('active');
   document.getElementById('ftab-convert').classList.add('open');
 });
-document.getElementById('qualitySlider').addEventListener('input',function(){
-  imgCurrentQuality=parseInt(this.value)/100;
-  document.getElementById('qualityVal').textContent=this.value+'%';
+document.getElementById('qualitySlider').addEventListener('input', function () {
+  imgCurrentQuality = parseInt(this.value) / 100;
+  document.getElementById('qualityVal').textContent = this.value + '%';
   updateImgSizePreview();
 });
-document.querySelectorAll('#imgFmtBtns .fmt-btn').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    imgCurrentFormat=btn.dataset.mime;
-    document.querySelectorAll('#imgFmtBtns .fmt-btn').forEach(b=>b.classList.remove('active'));
+document.querySelectorAll('#imgFmtBtns .fmt-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    imgCurrentFormat = btn.dataset.mime;
+    document.querySelectorAll('#imgFmtBtns .fmt-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    const slider=document.getElementById('qualitySlider');
-    const qval=document.getElementById('qualityVal');
-    if(imgCurrentFormat==='image/png'){slider.disabled=true;slider.style.opacity='0.4';qval.textContent='lossless';}
-    else{slider.disabled=false;slider.style.opacity='1';qval.textContent=Math.round(imgCurrentQuality*100)+'%';}
+    const slider = document.getElementById('qualitySlider');
+    const qval = document.getElementById('qualityVal');
+    if (imgCurrentFormat === 'image/png') { slider.disabled = true; slider.style.opacity = '0.4'; qval.textContent = 'lossless'; }
+    else { slider.disabled = false; slider.style.opacity = '1'; qval.textContent = Math.round(imgCurrentQuality * 100) + '%'; }
     updateImgSizePreview();
   });
 });
 
 function updateImgSizePreview() {
-  if(!pendingAttachment?.dataUrl) return;
-  const img=new Image();
-  img.onload=()=>{
-    const c=document.createElement('canvas'); c.width=img.naturalWidth; c.height=img.naturalHeight;
-    c.getContext('2d').drawImage(img,0,0);
-    const q=imgCurrentFormat==='image/png'?undefined:imgCurrentQuality;
-    const dataUrl=c.toDataURL(imgCurrentFormat,q);
-    const newSz=Math.round(dataUrl.length*0.75);
-    const origSz=pendingAttachment.origSize||Math.round(pendingAttachment.dataUrl.length*0.75);
-    const diff=newSz-origSz; const pct=Math.round(Math.abs(diff)/origSz*100);
-    document.getElementById('sizeOrig').textContent=formatBytes(origSz);
-    document.getElementById('sizeNew').textContent=formatBytes(newSz);
-    document.getElementById('sizeNew').className=diff<0?'size-good':'size-bad';
-    const tag=document.getElementById('sizeSavings');
-    if(diff<0){tag.className='size-tag size-tag-good';tag.textContent='-'+pct+'% saved';}
-    else{tag.className='size-tag size-tag-bad';tag.textContent='+'+pct+'% larger';}
+  if (!pendingAttachment?.dataUrl) return;
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    const q = imgCurrentFormat === 'image/png' ? undefined : imgCurrentQuality;
+    const dataUrl = c.toDataURL(imgCurrentFormat, q);
+    const newSz = Math.round(dataUrl.length * 0.75);
+    const origSz = pendingAttachment.origSize || Math.round(pendingAttachment.dataUrl.length * 0.75);
+    const diff = newSz - origSz; const pct = Math.round(Math.abs(diff) / origSz * 100);
+    document.getElementById('sizeOrig').textContent = formatBytes(origSz);
+    document.getElementById('sizeNew').textContent = formatBytes(newSz);
+    document.getElementById('sizeNew').className = diff < 0 ? 'size-good' : 'size-bad';
+    const tag = document.getElementById('sizeSavings');
+    if (diff < 0) { tag.className = 'size-tag size-tag-good'; tag.textContent = '-' + pct + '% saved'; }
+    else { tag.className = 'size-tag size-tag-bad'; tag.textContent = '+' + pct + '% larger'; }
   };
-  img.src=pendingAttachment.dataUrl;
+  img.src = pendingAttachment.dataUrl;
 }
 
-document.getElementById('applyBtn').addEventListener('click',()=>{
-  if(!pendingAttachment) return;
-  if(pendingAttachment.type==='image'){
-    const img=new Image();
-    img.onload=()=>{
-      const c=document.createElement('canvas'); c.width=img.naturalWidth; c.height=img.naturalHeight;
-      const ctx=c.getContext('2d');
-      if(imgCurrentFormat==='image/jpeg'){ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);}
-      ctx.drawImage(img,0,0);
-      const q=imgCurrentFormat==='image/png'?undefined:imgCurrentQuality;
-      pendingAttachment.processedDataUrl=c.toDataURL(imgCurrentFormat,q);
-      const ext=imgCurrentFormat.split('/')[1];
-      pendingAttachment.processedName=pendingAttachment.fileName.replace(/\.[^.]+$/,'')+'.'+ext;
-      const sz=formatBytes(Math.round(pendingAttachment.processedDataUrl.length*0.75));
-      showAttachPreview('🖼️',pendingAttachment.processedName,sz+' (processed)');
+document.getElementById('applyBtn').addEventListener('click', () => {
+  if (!pendingAttachment) return;
+  if (pendingAttachment.type === 'image') {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext('2d');
+      if (imgCurrentFormat === 'image/jpeg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); }
+      ctx.drawImage(img, 0, 0);
+      const q = imgCurrentFormat === 'image/png' ? undefined : imgCurrentQuality;
+      pendingAttachment.processedDataUrl = c.toDataURL(imgCurrentFormat, q);
+      const ext = imgCurrentFormat.split('/')[1];
+      pendingAttachment.processedName = pendingAttachment.fileName.replace(/\.[^.]+$/, '') + '.' + ext;
+      const sz = formatBytes(Math.round(pendingAttachment.processedDataUrl.length * 0.75));
+      showAttachPreview('🖼️', pendingAttachment.processedName, sz + ' (processed)');
       document.getElementById('fileToolsPanel').classList.remove('open');
       showNotif(`✓ ${ext.toUpperCase()} applied · ${sz}`);
     };
-    img.src=pendingAttachment.dataUrl;
+    img.src = pendingAttachment.dataUrl;
   } else {
-    if(!docTargetFormat){showNotif('Pick a format first');return;}
-    const att=pendingAttachment;
-    const ext=att.fileName.split('.').pop().toLowerCase();
-    if(['txt','csv','md'].includes(ext)){
-      const text=decodeURIComponent(escape(atob(att.dataUrl.split(',')[1])));
-      let result='', mime='text/plain', resExt=docTargetFormat;
-      if(docTargetFormat==='html'){
-        if(ext==='md') result=mdToHtml(text),mime='text/html';
-        else if(ext==='csv') result=csvToHtmlTable(text),mime='text/html';
-        else result=`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:sans-serif;line-height:1.6;max-width:800px;margin:2rem auto;padding:1rem;}</style></head><body><pre>${escHtml(text)}</pre></body></html>`,mime='text/html';
-      } else if(docTargetFormat==='json'&&ext==='csv'){
-        result=JSON.stringify(csvToJson(text),null,2);mime='application/json';
-      } else { result=text; }
-      att.processedDataUrl='data:'+mime+';base64,'+btoa(unescape(encodeURIComponent(result)));
-      att.processedName=att.fileName.replace(/\.[^.]+$/,'')+'.'+resExt;
-      att.processedMime=mime;
-      const sz=formatBytes(Math.round(att.processedDataUrl.length*0.75));
-      showAttachPreview(fileIcon(mime),att.processedName,sz+' (converted)');
+    if (!docTargetFormat) { showNotif('Pick a format first'); return; }
+    const att = pendingAttachment;
+    const ext = att.fileName.split('.').pop().toLowerCase();
+    if (['txt', 'csv', 'md'].includes(ext)) {
+      const text = decodeURIComponent(escape(atob(att.dataUrl.split(',')[1])));
+      let result = '', mime = 'text/plain', resExt = docTargetFormat;
+      if (docTargetFormat === 'html') {
+        if (ext === 'md') { result = mdToHtml(text); mime = 'text/html'; }
+        else if (ext === 'csv') { result = csvToHtmlTable(text); mime = 'text/html'; }
+        else { result = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:sans-serif;line-height:1.6;max-width:800px;margin:2rem auto;padding:1rem;}</style></head><body><pre>${escHtml(text)}</pre></body></html>`; mime = 'text/html'; }
+      } else if (docTargetFormat === 'json' && ext === 'csv') {
+        result = JSON.stringify(csvToJson(text), null, 2); mime = 'application/json';
+      } else { result = text; }
+      att.processedDataUrl = 'data:' + mime + ';base64,' + btoa(unescape(encodeURIComponent(result)));
+      att.processedName = att.fileName.replace(/\.[^.]+$/, '') + '.' + resExt;
+      att.processedMime = mime;
+      const sz = formatBytes(Math.round(att.processedDataUrl.length * 0.75));
+      showAttachPreview(fileIcon(mime), att.processedName, sz + ' (converted)');
       document.getElementById('fileToolsPanel').classList.remove('open');
       showNotif(`✓ Converted to ${resExt.toUpperCase()} · ${sz}`);
     } else {
@@ -1117,60 +1186,60 @@ document.getElementById('applyBtn').addEventListener('click',()=>{
   }
 });
 
-function mdToHtml(md){
-  let h=md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\*(.+?)\*/g,'<em>$1</em>').replace(/`(.+?)`/g,'<code>$1</code>')
-    .replace(/^\- (.+)$/gm,'<li>$1</li>').replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
+function mdToHtml(md) {
+  let h = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>').replace(/^## (.+)$/gm, '<h2>$1</h2>').replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>').replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/^\- (.+)$/gm, '<li>$1</li>').replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:sans-serif;line-height:1.6;max-width:800px;margin:2rem auto;padding:1rem;}code{background:#f0f0f0;padding:2px 5px;border-radius:3px;}</style></head><body><p>${h}</p></body></html>`;
 }
-function csvToHtmlTable(csv){
-  const rows=csv.trim().split('\n').map(r=>r.split(','));
-  const header=rows[0].map(c=>`<th style="background:#f5f5f5;padding:8px 12px;border:1px solid #ddd;text-align:left;">${escHtml(c.trim())}</th>`).join('');
-  const body=rows.slice(1).map(r=>'<tr>'+r.map(c=>`<td style="padding:7px 12px;border:1px solid #ddd;">${escHtml(c.trim())}</td>`).join('')+'</tr>').join('');
+function csvToHtmlTable(csv) {
+  const rows = csv.trim().split('\n').map(r => r.split(','));
+  const header = rows[0].map(c => `<th style="background:#f5f5f5;padding:8px 12px;border:1px solid #ddd;text-align:left;">${escHtml(c.trim())}</th>`).join('');
+  const body = rows.slice(1).map(r => '<tr>' + r.map(c => `<td style="padding:7px 12px;border:1px solid #ddd;">${escHtml(c.trim())}</td>`).join('') + '</tr>').join('');
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:sans-serif;padding:1rem;}table{border-collapse:collapse;width:100%;}</style></head><body><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></body></html>`;
 }
-function csvToJson(csv){
-  const rows=csv.trim().split('\n').map(r=>r.split(',').map(c=>c.trim()));
-  const headers=rows[0];
-  return rows.slice(1).map(row=>Object.fromEntries(headers.map((h,i)=>[h,row[i]||''])));
+function csvToJson(csv) {
+  const rows = csv.trim().split('\n').map(r => r.split(',').map(c => c.trim()));
+  const headers = rows[0];
+  return rows.slice(1).map(row => Object.fromEntries(headers.map((h, i) => [h, row[i] || ''])));
 }
 
 function showAttachPreview(icon, name, meta) {
-  document.getElementById('attachThumbIcon').textContent=icon;
-  document.getElementById('attachThumbName').textContent=name;
-  document.getElementById('attachThumbMeta').textContent=meta;
-  document.getElementById('attachPreviewWrap').style.display='block';
-  document.getElementById('msgInput').placeholder='Add a caption (optional)…';
+  document.getElementById('attachThumbIcon').textContent = icon;
+  document.getElementById('attachThumbName').textContent = name;
+  document.getElementById('attachThumbMeta').textContent = meta;
+  document.getElementById('attachPreviewWrap').style.display = 'block';
+  document.getElementById('msgInput').placeholder = 'Add a caption (optional)…';
 }
 function clearAttachment() {
-  pendingAttachment=null;
-  document.getElementById('attachPreviewWrap').style.display='none';
+  pendingAttachment = null;
+  document.getElementById('attachPreviewWrap').style.display = 'none';
   document.getElementById('fileToolsPanel').classList.remove('open');
-  document.getElementById('compressToolBtn').style.display='none';
-  document.getElementById('msgInput').placeholder='Type a message…';
+  document.getElementById('compressToolBtn').style.display = 'none';
+  document.getElementById('msgInput').placeholder = 'Type a message…';
 }
 document.getElementById('clearAttachBtn').addEventListener('click', clearAttachment);
 
 // ── LIGHTBOX ──
 function openLightbox(src) {
-  document.getElementById('lightboxImg').src=src;
+  document.getElementById('lightboxImg').src = src;
   document.getElementById('lightbox').classList.add('open');
 }
-document.getElementById('lightbox').addEventListener('click', ()=>document.getElementById('lightbox').classList.remove('open'));
-document.getElementById('lightbox-close').addEventListener('click', e=>{e.stopPropagation();document.getElementById('lightbox').classList.remove('open');});
+document.getElementById('lightbox').addEventListener('click', () => document.getElementById('lightbox').classList.remove('open'));
+document.getElementById('lightbox-close').addEventListener('click', e => { e.stopPropagation(); document.getElementById('lightbox').classList.remove('open'); });
 
 // ── UTILS ──
-function getTime(){return new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});}
-function formatDur(s){const r=Math.round(s);return Math.floor(r/60)+':'+(r%60).toString().padStart(2,'0');}
-function formatBytes(b){if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(1)+' KB';return (b/1048576).toFixed(2)+' MB';}
-function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function getTime() { return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }); }
+function formatDur(s) { const r = Math.round(s); return Math.floor(r / 60) + ':' + (r % 60).toString().padStart(2, '0'); }
+function formatBytes(b) { if (b < 1024) return b + ' B'; if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'; return (b / 1048576).toFixed(2) + ' MB'; }
+function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 let notifTimer;
-function showNotif(msg){
-  const el=document.getElementById('notif');
-  el.textContent=msg; el.classList.add('show');
-  if(notifTimer) clearTimeout(notifTimer);
-  notifTimer=setTimeout(()=>el.classList.remove('show'),3000);
+function showNotif(msg) {
+  const el = document.getElementById('notif');
+  el.textContent = msg; el.classList.add('show');
+  if (notifTimer) clearTimeout(notifTimer);
+  notifTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
 </script>
 </body>
